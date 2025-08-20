@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+      <PackageReference Include="NSubstitute" Version="5.3.0" />
+      <PackageReference Include="NUnit" Version="4.4.0" />
+      <PackageReference Include="Shouldly" Version="4.3.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\RecipeParser.Application\RecipeParser.Application.csproj" />
+      <ProjectReference Include="..\RecipeParser.Domain\RecipeParser.Domain.csproj" />
+    </ItemGroup>
+
+</Project>
