@@ -27,9 +27,9 @@ public partial class RecipeParserServiceTests
         
         result.Serves.ShouldBe("6");
         
-        result.Ingredients.Count.ShouldBe(18);
-        result.Ingredients.First().ShouldBe("650 g chicken breasts ((£4.00))");
-        result.Ingredients.Last().ShouldBe("Chilli flakes");
+        result.RawIngredients.Count.ShouldBe(18);
+        result.RawIngredients.First().ShouldBe("650 g chicken breasts ((£4.00))");
+        result.RawIngredients.Last().ShouldBe("Chilli flakes");
         
         result.Description.ShouldBe("One of the best fakeaway creations! My Wagamama inspired chicken katsu curry. With the crispy breaded chicken being baked, it’s lower in calories and just as delicious.");
         

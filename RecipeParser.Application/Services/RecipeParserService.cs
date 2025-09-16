@@ -1,21 +1,70 @@
 using System.Text.Json.Nodes;
 using AngleSharp;
+using Jering.Javascript.NodeJS;
 using RecipeParser.Domain.Exceptions;
 using RecipeParser.Domain.Interfaces;
 using RecipeParser.Domain.Models;
 
 namespace RecipeParser.Application.Services;
 
-public class RecipeParserService: IRecipeParserService
+public class RecipeParserService(INodeJSService node): IRecipeParserService
 {
     public async Task<Recipe> ParseRecipeByUrl(string url)
     {
         var jsonRecipe = await TryParseSchema(url);
+
+        Recipe? recipe = null;
         if (jsonRecipe is not null)
         {
-            return jsonRecipe;
+            recipe = jsonRecipe;
         }
 
+        foreach (var ingredient in recipe?.RawIngredients ?? [])
+        {
+            var result = await node.InvokeFromFileAsync<IngredientResult>(
+                "Node/recipeParser.cjs",
+                exportName: "parseIngredientLine",
+                args: new object?[] { ingredient, "en", new { } }
+            );
+            
+            if (result is not null)
+                recipe?.Ingredients.Add(result);
+        }
+
+        foreach (var stepSection in recipe?.StepSections)
+        {
+            foreach (var step in stepSection.Steps)
+            {
+                var result = await node.InvokeFromFileAsync<InstructionResult>(
+                    "Node/recipeParser.cjs",
+                    exportName: "parseInstructionLine",
+                    args: new object?[] { step.Step, "en", new { } }
+                );
+
+                if (result?.TimeItems.Length > 0)
+                {
+                    step.Times = result.TimeItems.Select(t => new RecipeStepTime
+                    {
+                        TimeInSeconds = t.TimeInSeconds,
+                        TimeText = t.TimeText,
+                        TimeUnitText = t.TimeUnitText
+                    }).ToList();
+                }
+
+                if (result?.Temperature is not null and not 0)
+                {
+                    step.Temperatures.Add(new RecipeStepTemperature()
+                    {
+                        Temperature = result.Temperature ?? 0,
+                        TemperatureText = result.TemperatureText ?? "",
+                        TemperatureUnitText = result.TemperatureUnitText ?? ""
+                    });
+                }
+            }
+        }
+        
+        if (recipe is not null)
+            return recipe;
 
         throw new NoRecipeFoundException();
     }
@@ -171,7 +220,7 @@ public class RecipeParserService: IRecipeParserService
             MinutesToPrepare = prep?.TotalMinutes,
             TotalMins = total?.TotalMinutes,
             Serves = yield,
-            Ingredients = ingredients,
+            RawIngredients = ingredients,
             Tags = categories
                 .Concat(cuisines)
                 .Concat(keywords)

@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using AngleSharp;
 using AngleSharp.Io;
+using Jering.Javascript.NodeJS;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using RecipeParser.Application.Services;
 using RecipeParser.Domain.Interfaces;
@@ -38,6 +39,12 @@ builder.Services.AddHttpClient("recipe-fetcher", client =>
     MaxConnectionsPerServer = 8
 });
 
+builder.Services.Configure<NodeJSProcessOptions>(opts =>
+{
+    var contentRoot = builder.Environment.ContentRootPath;
+    opts.ProjectPath = Path.GetFullPath(Path.Combine(contentRoot, "..", "RecipeParser.Application", "Services"));
+});
+builder.Services.AddNodeJS();
 builder.Services.AddEndpointsApiExplorer();
 
 if (builder.Environment.IsDevelopment())

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RecipeParser.Domain.Models;
 
 public class Recipe
@@ -15,7 +17,10 @@ public class Recipe
     
     public string? Serves { get; set; }
     
-    public ICollection<string> Ingredients { get; set; } = new List<string>();
+    [JsonIgnore]
+    public ICollection<string> RawIngredients { get; set; } = new List<string>();
+    
+    public ICollection<IngredientResult> Ingredients { get; set; } = new List<IngredientResult>();
 
     public List<string?> Tags { get; set; } = [];
     

@@ -28,9 +28,9 @@ public partial class RecipeParserServiceTests
         
         result.Serves.ShouldBe("6");
         
-        result.Ingredients.Count.ShouldBe(7);
-        result.Ingredients.First().ShouldBe("500g lean beef or pork mince");
-        result.Ingredients.Last().ShouldBe("burger buns sliced cheese, lettuce, sliced tomato and lingonberry sauce (optional), to serve");
+        result.RawIngredients.Count.ShouldBe(7);
+        result.RawIngredients.First().ShouldBe("500g lean beef or pork mince");
+        result.RawIngredients.Last().ShouldBe("burger buns sliced cheese, lettuce, sliced tomato and lingonberry sauce (optional), to serve");
         
         result.Description.ShouldBe("Love Swedish meatballs? Here we’ve transformed them into a burger that kids will adore – choose beef or pork mince, the flavours will be the same");
         
