@@ -41,8 +41,7 @@ builder.Services.AddHttpClient("recipe-fetcher", client =>
 
 builder.Services.Configure<NodeJSProcessOptions>(opts =>
 {
-    var contentRoot = builder.Environment.ContentRootPath;
-    opts.ProjectPath = Path.GetFullPath(Path.Combine(contentRoot, "..", "RecipeParser.Application", "Services"));
+    opts.ProjectPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Node");
 });
 builder.Services.AddNodeJS();
 builder.Services.AddEndpointsApiExplorer();

@@ -15,5 +15,4 @@
       <PackageReference Include="Jering.Javascript.NodeJS" Version="7.0.0" />
       <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.8" />
     </ItemGroup>
-
 </Project>

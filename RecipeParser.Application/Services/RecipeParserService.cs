@@ -22,7 +22,7 @@ public class RecipeParserService(INodeJSService node): IRecipeParserService
         foreach (var ingredient in recipe?.RawIngredients ?? [])
         {
             var result = await node.InvokeFromFileAsync<IngredientResult>(
-                "Node/recipeParser.cjs",
+                "recipeParser.cjs",
                 exportName: "parseIngredientLine",
                 args: new object?[] { ingredient, "en", new { } }
             );
@@ -36,7 +36,7 @@ public class RecipeParserService(INodeJSService node): IRecipeParserService
             foreach (var step in stepSection.Steps)
             {
                 var result = await node.InvokeFromFileAsync<InstructionResult>(
-                    "Node/recipeParser.cjs",
+                    "recipeParser.cjs",
                     exportName: "parseInstructionLine",
                     args: new object?[] { step.Step, "en", new { } }
                 );
