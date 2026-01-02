@@ -47,5 +47,10 @@ public partial class RecipeParserServiceTests
         
         // result.Ratings.OverallRating.ShouldBe(5);
         result.Ratings.Reviews.Count.ShouldBeGreaterThanOrEqualTo(0);
+        // New assertions for ratings
+        result.Ratings.TotalRatings.ShouldBeGreaterThanOrEqualTo(0);
+        // At least one review should have a rating if reviews exist
+        if (result.Ratings.Reviews.Count > 0)
+            result.Ratings.Reviews.Any(r => r.Rating != null).ShouldBeTrue();
     }
 }

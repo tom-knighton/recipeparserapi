@@ -196,17 +196,57 @@ public class RecipeParserService(INodeJSService node): IRecipeParserService
         
         var images = ExtractImages(r);
         
-        var reviews = r["review"] switch
+        var reviews = new List<RecipeReviews>();
+        switch (r["review"])
         {
-            JsonArray a => a.Select(x => x is JsonObject o && o["reviewBody"] is JsonValue v ? v.ToString() : null).Where(s => !string.IsNullOrWhiteSpace(s)).ToList(),
-            JsonObject o when o["reviewBody"] is JsonValue v => [v.ToString()],
-            _ => []
-        };
+            case JsonArray reviewArr:
+            {
+                foreach (var reviewNode in reviewArr)
+                {
+                    if (reviewNode is not JsonObject reviewObj) continue;
+                    var text = reviewObj["reviewBody"]?.ToString();
+                    int? rating = null;
+                    if (reviewObj["reviewRating"] is JsonObject ratingObj && ratingObj["ratingValue"] != null)
+                    {
+                        if (int.TryParse(ratingObj["ratingValue"]?.ToString(), out var parsedRating))
+                        {
+                            rating = parsedRating;
+                        }
+                    }
+                    if (!string.IsNullOrWhiteSpace(text))
+                        reviews.Add(new RecipeReviews { Text = text, Rating = rating });
+                }
+
+                break;
+            }
+            case JsonObject singleReviewObj:
+            {
+                var text = singleReviewObj["reviewBody"]?.ToString();
+                int? rating = null;
+                if (singleReviewObj["reviewRating"] is JsonObject ratingObj && ratingObj["ratingValue"] != null)
+                {
+                    if (int.TryParse(ratingObj["ratingValue"]?.ToString(), out var parsedRating))
+                    {
+                        rating = parsedRating;
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(text))
+                    reviews.Add(new RecipeReviews { Text = text, Rating = rating });
+                break;
+            }
+        }
 
         double? aggregateRating = r["aggregateRating"] switch
         {
             JsonObject o when o["ratingValue"] is JsonValue v => double.TryParse(v.ToString(), out var rVal) ? rVal : null,
             JsonValue v => double.TryParse(v.ToString(), out var rVal) ? rVal : null,
+            _ => null
+        };
+        
+        int? totalRatings = r["aggregateRating"] switch
+        {
+            JsonObject o when o["ratingCount"] is JsonValue v => int.TryParse(v.ToString(), out var rCount) ? rCount : null,
+            JsonValue v => int.TryParse(v.ToString(), out var rCount) ? rCount : null,
             _ => null
         };
 
@@ -231,7 +271,8 @@ public class RecipeParserService(INodeJSService node): IRecipeParserService
             Ratings = new  RecipeRatings
             {
                 OverallRating = aggregateRating,
-                Reviews = reviews.Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => new RecipeReviews { Text = r }).ToList()
+                TotalRatings = totalRatings ?? reviews.Count,
+                Reviews = reviews.Where(r => !string.IsNullOrWhiteSpace(r.Text)).Select(r => new RecipeReviews { Text = r.Text, Rating = r.Rating }).ToList()
             }
         };
     }
