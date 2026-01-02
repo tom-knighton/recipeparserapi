@@ -41,8 +41,9 @@ RUN apt-get update \
 
 COPY --from=build /out ./
 
-# Expose port 80
-EXPOSE 80
+# Expose port 8080
+ENV ASPNETCORE_URLS=http://*:8080
+EXPOSE 8080
 
 # Set the entrypoint
 ENTRYPOINT ["dotnet", "RecipeParser.API.dll"]
