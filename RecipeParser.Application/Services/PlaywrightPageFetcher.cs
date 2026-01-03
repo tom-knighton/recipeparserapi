@@ -4,19 +4,19 @@ namespace RecipeParser.Application.Services;
 
 using Microsoft.Playwright;
 
-public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser) : IPageFetcher, IAsyncDisposable
+public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser) : IPageFetcher
 {
-    private static readonly HttpClient _httpClient = new();
+    private static readonly HttpClient HttpClient = new();
 
     static PlaywrightPageFetcher()
     {
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+        HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
     }
 
     public async Task<string> GetStaticHtmlAsync(string url, CancellationToken ct = default)
     {
-        return await _httpClient.GetStringAsync(url, ct);
+        return await HttpClient.GetStringAsync(url, ct);
     }
 
     public async Task<IReadOnlyList<string>> GetRenderedJsonLdAsync(
@@ -40,6 +40,4 @@ public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser) : IPageFet
         await ctx.CloseAsync();
         return jsons.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
     }
-
-    public async ValueTask DisposeAsync() => await browser.DisposeAsync();
 }

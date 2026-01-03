@@ -1,9 +1,6 @@
 using System.Net;
 using System.Reflection;
-using AngleSharp;
-using AngleSharp.Io;
 using Jering.Javascript.NodeJS;
-using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.OpenApi.Models;
 using RecipeParser.Application.Services;
 using RecipeParser.Domain.Interfaces;
@@ -21,8 +18,7 @@ builder.Configuration
 builder.Services.AddControllers();
 
 builder.Services.AddSingleton<IPlaywrightBrowser, PlaywrightBrowser>();
-builder.Services.AddSingleton<IPageFetcher, PlaywrightPageFetcher>();
-builder.Services.AddHostedService<PlaywrightWarmupService>();
+builder.Services.AddScoped<IPageFetcher, PlaywrightPageFetcher>();
 builder.Services.AddTransient<IRecipeParserService, RecipeParserService>();
 
 builder.Services.AddHttpClient("recipe-fetcher", client =>
@@ -86,14 +82,3 @@ app.UseHttpsRedirection();
 app.MapControllers();
 app.Run();
 
-public sealed class PlaywrightWarmupService : IHostedService
-{
-    private readonly IPlaywrightBrowser _browser;
-    public PlaywrightWarmupService(IPlaywrightBrowser browser) => _browser = browser;
-
-    public async Task StartAsync(CancellationToken token)
-    {
-        await using var ctx = await _browser.NewContextAsync();
-    }
-    public Task StopAsync(CancellationToken token) => Task.CompletedTask;
-}
