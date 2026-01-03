@@ -20,6 +20,9 @@ builder.Configuration
 
 builder.Services.AddControllers();
 
+builder.Services.AddSingleton<IPlaywrightBrowser, PlaywrightBrowser>();
+builder.Services.AddSingleton<IPageFetcher, PlaywrightPageFetcher>();
+builder.Services.AddHostedService<PlaywrightWarmupService>();
 builder.Services.AddTransient<IRecipeParserService, RecipeParserService>();
 
 builder.Services.AddHttpClient("recipe-fetcher", client =>
@@ -82,3 +85,15 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.MapControllers();
 app.Run();
+
+public sealed class PlaywrightWarmupService : IHostedService
+{
+    private readonly IPlaywrightBrowser _browser;
+    public PlaywrightWarmupService(IPlaywrightBrowser browser) => _browser = browser;
+
+    public async Task StartAsync(CancellationToken token)
+    {
+        await using var ctx = await _browser.NewContextAsync();
+    }
+    public Task StopAsync(CancellationToken token) => Task.CompletedTask;
+}

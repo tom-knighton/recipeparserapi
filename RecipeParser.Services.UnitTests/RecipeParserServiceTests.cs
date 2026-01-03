@@ -16,6 +16,6 @@ public partial class RecipeParserServiceTests
     public void Setup()
     {
         _mockNode = Substitute.For<INodeJSService>();
-        _sut = new RecipeParserService(_mockNode);
+        _sut = new RecipeParserService(_mockNode, new PlaywrightPageFetcher(new PlaywrightBrowser()));
     }
 }
