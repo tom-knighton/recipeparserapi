@@ -20,47 +20,62 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
             recipe = jsonRecipe;
         }
 
-        foreach (var ingredient in recipe?.RawIngredients ?? [])
+        var ingredientTasks = (recipe?.RawIngredients ?? [])
+            .Select(async ingredient =>
+            {
+                var result = await node.InvokeFromFileAsync<IngredientResult>(
+                    "recipeParser.cjs",
+                    exportName: "parseIngredientLine",
+                    args: new object?[] { ingredient, "en", new { } }
+                );
+                return (ingredient, result);
+            })
+            .ToList();
+
+        var ingredientResults = await Task.WhenAll(ingredientTasks);
+        foreach (var (_, result) in ingredientResults)
         {
-            var result = await node.InvokeFromFileAsync<IngredientResult>(
-                "recipeParser.cjs",
-                exportName: "parseIngredientLine",
-                args: new object?[] { ingredient, "en", new { } }
-            );
-            
-            if (result is not null)
-                recipe?.Ingredients.Add(result);
+            if (result is not null && recipe is not null)
+                recipe.Ingredients.Add(result);
         }
 
-        foreach (var stepSection in recipe?.StepSections)
+        var stepTasks = new List<Task<(RecipeStep step, InstructionResult? result)>>();
+        foreach (var stepSection in recipe?.StepSections ?? [])
         {
             foreach (var step in stepSection.Steps)
             {
-                var result = await node.InvokeFromFileAsync<InstructionResult>(
-                    "recipeParser.cjs",
-                    exportName: "parseInstructionLine",
-                    args: new object?[] { step.Step, "en", new { } }
+                var stepCopy = step;
+                stepTasks.Add(
+                    node.InvokeFromFileAsync<InstructionResult>(
+                        "recipeParser.cjs",
+                        exportName: "parseInstructionLine",
+                        args: new object?[] { step.Step, "en", new { } }
+                    ).ContinueWith(t => (stepCopy, t.Result))
                 );
+            }
+        }
 
-                if (result?.TimeItems.Length > 0)
+        var stepResults = await Task.WhenAll(stepTasks);
+        foreach (var (step, result) in stepResults)
+        {
+            if (result?.TimeItems.Length > 0)
+            {
+                step.Times = result.TimeItems.Select(t => new RecipeStepTime
                 {
-                    step.Times = result.TimeItems.Select(t => new RecipeStepTime
-                    {
-                        TimeInSeconds = t.TimeInSeconds,
-                        TimeText = t.TimeText,
-                        TimeUnitText = t.TimeUnitText
-                    }).ToList();
-                }
+                    TimeInSeconds = t.TimeInSeconds,
+                    TimeText = t.TimeText,
+                    TimeUnitText = t.TimeUnitText
+                }).ToList();
+            }
 
-                if (result?.Temperature is not null and not 0)
+            if (result?.Temperature is not null and not 0)
+            {
+                step.Temperatures.Add(new RecipeStepTemperature()
                 {
-                    step.Temperatures.Add(new RecipeStepTemperature()
-                    {
-                        Temperature = result.Temperature ?? 0,
-                        TemperatureText = result.TemperatureText ?? "",
-                        TemperatureUnitText = result.TemperatureUnitText ?? ""
-                    });
-                }
+                    Temperature = result.Temperature ?? 0,
+                    TemperatureText = result.TemperatureText ?? "",
+                    TemperatureUnitText = result.TemperatureUnitText ?? ""
+                });
             }
         }
         
@@ -79,7 +94,7 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
         if (IsComplete(recipeNodes))
             return MapRecipeFromSchema(MergeRecipeNodes(recipeNodes), url);
 
-        var (_, renderedScripts) = await fetcher.GetRenderedJsonLdAsync(url, timeout: TimeSpan.FromSeconds(15));
+        var renderedScripts = await fetcher.GetRenderedJsonLdAsync(url, timeout: TimeSpan.FromSeconds(15));
         var renderedNodes = CollectRecipeNodes(renderedScripts);
 
         if (renderedNodes.Count > 0)

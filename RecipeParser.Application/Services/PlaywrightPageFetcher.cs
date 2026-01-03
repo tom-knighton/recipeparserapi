@@ -6,15 +6,20 @@ using Microsoft.Playwright;
 
 public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser) : IPageFetcher, IAsyncDisposable
 {
-    public async Task<string> GetStaticHtmlAsync(string url, CancellationToken ct = default)
+    private static readonly HttpClient _httpClient = new();
+
+    static PlaywrightPageFetcher()
     {
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-        return await http.GetStringAsync(url, ct);
     }
 
-    public async Task<(string Html, IReadOnlyList<string> JsonLd)> GetRenderedJsonLdAsync(
+    public async Task<string> GetStaticHtmlAsync(string url, CancellationToken ct = default)
+    {
+        return await _httpClient.GetStringAsync(url, ct);
+    }
+
+    public async Task<IReadOnlyList<string>> GetRenderedJsonLdAsync(
         string url, TimeSpan timeout, CancellationToken ct = default)
     {
         var ctx = await browser.NewContextAsync(new()
@@ -22,20 +27,18 @@ public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser) : IPageFet
             UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         });
         var page = await ctx.NewPageAsync();
-        await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.NetworkIdle, Timeout = (float)timeout.TotalMilliseconds });
+        await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = (float)timeout.TotalMilliseconds });
 
-        try { await page.ClickAsync("button:has-text('Accept all')", new() { Timeout = 1500 }); } catch { /* ignore */ }
+        try { await page.ClickAsync("button:has-text('Accept all')", new() { Timeout = 10 }); } catch { /* ignore */ }
 
-        try { await page.WaitForSelectorAsync("script[type='application/ld+json']", new() { Timeout = 4000 }); } catch { /* ok if none */ }
+        try { await page.WaitForSelectorAsync("script[type='application/ld+json']", new() { Timeout = 10 }); } catch { /* ok if none */ }
 
         var jsons = await page.EvalOnSelectorAllAsync<string[]>(
             "script[type='application/ld+json']",
             "nodes => nodes.map(n => n.textContent ?? '')");
 
-        var content = await page.ContentAsync();
-
         await ctx.CloseAsync();
-        return (content, jsons.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray());
+        return jsons.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
     }
 
     public async ValueTask DisposeAsync() => await browser.DisposeAsync();
