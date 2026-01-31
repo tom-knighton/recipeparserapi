@@ -1,51 +1,149 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using AngleSharp;
+using Jering.Javascript.NodeJS;
 using RecipeParser.Domain.Exceptions;
 using RecipeParser.Domain.Interfaces;
 using RecipeParser.Domain.Models;
 
 namespace RecipeParser.Application.Services;
 
-public class RecipeParserService: IRecipeParserService
+public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRecipeParserService
 {
     public async Task<Recipe> ParseRecipeByUrl(string url)
     {
         var jsonRecipe = await TryParseSchema(url);
+
+        Recipe? recipe = null;
         if (jsonRecipe is not null)
         {
-            return jsonRecipe;
+            recipe = jsonRecipe;
         }
 
+        var ingredientTasks = (recipe?.RawIngredients ?? [])
+            .Select(async ingredient =>
+            {
+                var result = await node.InvokeFromFileAsync<IngredientResult>(
+                    "recipeParser.cjs",
+                    exportName: "parseIngredientLine",
+                    args: new object?[] { ingredient, "en", new { } }
+                );
+                return (ingredient, result);
+            })
+            .ToList();
+
+        var ingredientResults = await Task.WhenAll(ingredientTasks);
+        foreach (var (_, result) in ingredientResults)
+        {
+            if (result is not null && recipe is not null)
+                recipe.Ingredients.Add(result);
+        }
+
+        var stepTasks = new List<Task<(RecipeStep step, InstructionResult? result)>>();
+        foreach (var stepSection in recipe?.StepSections ?? [])
+        {
+            foreach (var step in stepSection.Steps)
+            {
+                var stepCopy = step;
+                stepTasks.Add(
+                    node.InvokeFromFileAsync<InstructionResult>(
+                        "recipeParser.cjs",
+                        exportName: "parseInstructionLine",
+                        args: new object?[] { step.Step, "en", new { } }
+                    ).ContinueWith(t => (stepCopy, t.Result))
+                );
+            }
+        }
+
+        var stepResults = await Task.WhenAll(stepTasks);
+        foreach (var (step, result) in stepResults)
+        {
+            if (result?.TimeItems.Length > 0)
+            {
+                step.Times = result.TimeItems.Select(t => new RecipeStepTime
+                {
+                    TimeInSeconds = t.TimeInSeconds,
+                    TimeText = t.TimeText,
+                    TimeUnitText = t.TimeUnitText
+                }).ToList();
+            }
+
+            if (result?.Temperature is not null and not 0)
+            {
+                step.Temperatures.Add(new RecipeStepTemperature()
+                {
+                    Temperature = result.Temperature ?? 0,
+                    TemperatureText = result.TemperatureText ?? "",
+                    TemperatureUnitText = result.TemperatureUnitText ?? ""
+                });
+            }
+        }
+        
+        if (recipe is not null)
+            return recipe;
 
         throw new NoRecipeFoundException();
     }
 
     private async Task<Recipe?> TryParseSchema(string url)
     {
-        var cfg = Configuration.Default.WithDefaultLoader();
-        var ctx = BrowsingContext.New(cfg);
-        var doc = await ctx.OpenAsync(url);
+        var staticHtml = await fetcher.GetStaticHtmlAsync(url);
+        var staticScripts = ExtractLdJsonStrings(staticHtml);
 
-        var scripts = doc
-            .QuerySelectorAll("script[type='application/ld+json']")
-            .Select(s => s.TextContent)
-            .Where(s => !string.IsNullOrWhiteSpace(s));
+        var recipeNodes = CollectRecipeNodes(staticScripts);
+        if (IsComplete(recipeNodes))
+            return MapRecipeFromSchema(MergeRecipeNodes(recipeNodes), url);
 
-        foreach (var json in scripts)
-        {
-            foreach (var node in ExpandCandidates(json))
-            {
-                if (!IsRecipeNode(node)) continue;
+        var renderedScripts = await fetcher.GetRenderedJsonLdAsync(url, timeout: TimeSpan.FromSeconds(15));
+        var renderedNodes = CollectRecipeNodes(renderedScripts);
 
-                var r = MapRecipeFromSchema(node, url);
-                if (r is not null)
-                {
-                    return r;
-                }
-            }
-        }
+        if (renderedNodes.Count > 0)
+            return MapRecipeFromSchema(MergeRecipeNodes(renderedNodes), url);
 
         return null;
+    }
+    
+    private static IReadOnlyList<string> ExtractLdJsonStrings(string html)
+    {
+        var list = new List<string>();
+        var doc = AngleSharp.BrowsingContext.New(AngleSharp.Configuration.Default)
+            .OpenAsync(req => req.Content(html)).GetAwaiter().GetResult();
+        foreach (var s in doc.QuerySelectorAll("script[type='application/ld+json']"))
+        {
+            var txt = s.TextContent;
+            if (!string.IsNullOrWhiteSpace(txt)) list.Add(txt);
+        }
+        return list;
+    }
+
+    private static List<JsonObject> CollectRecipeNodes(IEnumerable<string> scripts)
+    {
+        var acc = new List<JsonObject>();
+        foreach (var json in scripts)
+        foreach (var node in ExpandCandidates(json))
+            if (IsRecipeNode(node)) acc.Add(node);
+        return acc;
+    }
+
+    private static bool IsComplete(List<JsonObject> nodes)
+    {
+        if (nodes.Count == 0) return false;
+        var merged = MergeRecipeNodes(nodes);
+        return merged.ContainsKey("comment") && (merged.ContainsKey("recipeIngredient") || merged.ContainsKey("aggregateRating"));
+    }
+    
+    private static JsonObject MergeRecipeNodes(List<JsonObject> nodes)
+    {
+        if (nodes.Count == 1) return nodes[0];
+        var merged = new JsonObject();
+        foreach (var node in nodes)
+        {
+            foreach (var prop in node)
+            {
+                merged[prop.Key] = prop.Value?.Deserialize<JsonNode>();
+            }
+        }
+        return merged;
     }
     
     static IEnumerable<JsonObject> ExpandCandidates(string json)
@@ -64,15 +162,34 @@ public class RecipeParserService: IRecipeParserService
         }
     }
     
-    static bool IsRecipeNode(JsonObject node)
+    static bool IsRecipeNode(JsonObject node, string? previousRecipeId = null)
     {
-        if (!node.TryGetPropertyValue("@type", out var t)) return false;
-        return t switch
+        var id = node.TryGetPropertyValue("@id", out var idNode) && idNode is JsonValue idValue ? idValue.ToString() : null;
+        var hasType = node.TryGetPropertyValue("@type", out var t);
+        var hasValidId = id is null || previousRecipeId is null || id.Equals(previousRecipeId, StringComparison.OrdinalIgnoreCase);
+
+        if (!hasType && !hasValidId) return false;
+
+        if (t is not null)
         {
-            JsonValue v when v.TryGetValue<string>(out var s) => s.Equals("Recipe", StringComparison.OrdinalIgnoreCase),
-            JsonArray a => a.Any(x => x is JsonValue v && v.TryGetValue<string>(out var s) && s.Equals("Recipe", StringComparison.OrdinalIgnoreCase)),
-            _ => false
-        };
+            if (t is JsonValue v && v.TryGetValue<string>(out var typeStr) && typeStr.Equals("Recipe", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        
+            if (t is JsonArray a && a.Any(x => x is JsonValue v && v.TryGetValue<string>(out var s) && s.Equals("Recipe", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            return false;
+        }
+
+
+        if (hasValidId)
+        {
+            return true;
+        }
+
+        return false;
     }
     
     static IEnumerable<JsonObject?> Flatten(JsonNode? node)
@@ -147,17 +264,80 @@ public class RecipeParserService: IRecipeParserService
         
         var images = ExtractImages(r);
         
-        var reviews = r["review"] switch
+        var reviews = new List<RecipeReviews>();
+        switch (r["review"])
         {
-            JsonArray a => a.Select(x => x is JsonObject o && o["reviewBody"] is JsonValue v ? v.ToString() : null).Where(s => !string.IsNullOrWhiteSpace(s)).ToList(),
-            JsonObject o when o["reviewBody"] is JsonValue v => [v.ToString()],
-            _ => []
-        };
+            case JsonArray reviewArr:
+            {
+                foreach (var reviewNode in reviewArr)
+                {
+                    if (reviewNode is not JsonObject reviewObj) continue;
+                    var text = reviewObj["reviewBody"]?.ToString();
+                    int? rating = null;
+                    if (reviewObj["reviewRating"] is JsonObject ratingObj && ratingObj["ratingValue"] != null)
+                    {
+                        if (int.TryParse(ratingObj["ratingValue"]?.ToString(), out var parsedRating))
+                        {
+                            rating = parsedRating;
+                        }
+                    }
+                    if (!string.IsNullOrWhiteSpace(text))
+                        reviews.Add(new RecipeReviews { Text = text, Rating = rating });
+                }
+
+                break;
+            }
+            case JsonObject singleReviewObj:
+            {
+                var text = singleReviewObj["reviewBody"]?.ToString();
+                int? rating = null;
+                if (singleReviewObj["reviewRating"] is JsonObject ratingObj && ratingObj["ratingValue"] != null)
+                {
+                    if (int.TryParse(ratingObj["ratingValue"]?.ToString(), out var parsedRating))
+                    {
+                        rating = parsedRating;
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(text))
+                    reviews.Add(new RecipeReviews { Text = text, Rating = rating });
+                break;
+            }
+        }
+        
+        switch (r["comment"])
+        {
+            case JsonArray commentArr:
+            {
+                foreach (var commentNode in commentArr)
+                {
+                    if (commentNode is not JsonObject commentObj) continue;
+                    var text = commentObj["text"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                        reviews.Add(new RecipeReviews { Text = text, Rating = null });
+                }
+                break;
+            }
+            case JsonObject singleCommentObj:
+            {
+                var text = singleCommentObj["text"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(text))
+                    reviews.Add(new RecipeReviews { Text = text, Rating = null });
+                break;
+            }
+        }
 
         double? aggregateRating = r["aggregateRating"] switch
         {
             JsonObject o when o["ratingValue"] is JsonValue v => double.TryParse(v.ToString(), out var rVal) ? rVal : null,
             JsonValue v => double.TryParse(v.ToString(), out var rVal) ? rVal : null,
+            _ => null
+        };
+        
+        int? totalRatings = r["aggregateRating"] switch
+        {
+            JsonObject o when o["ratingCount"] is JsonValue v && int.TryParse(v.ToString(), out var rCount) => rCount,
+            JsonObject o when o["reviewCount"] is JsonValue v && int.TryParse(v.ToString(), out var rCount) => rCount,
+            JsonValue v when int.TryParse(v.ToString(), out var rCount) => rCount,
             _ => null
         };
 
@@ -171,7 +351,7 @@ public class RecipeParserService: IRecipeParserService
             MinutesToPrepare = prep?.TotalMinutes,
             TotalMins = total?.TotalMinutes,
             Serves = yield,
-            Ingredients = ingredients,
+            RawIngredients = ingredients,
             Tags = categories
                 .Concat(cuisines)
                 .Concat(keywords)
@@ -182,7 +362,8 @@ public class RecipeParserService: IRecipeParserService
             Ratings = new  RecipeRatings
             {
                 OverallRating = aggregateRating,
-                Reviews = reviews.Where(r => !string.IsNullOrWhiteSpace(r)).Select(r => new RecipeReviews { Text = r }).ToList()
+                TotalRatings = totalRatings ?? reviews.Count,
+                Reviews = reviews.Where(r => !string.IsNullOrWhiteSpace(r.Text)).Select(r => new RecipeReviews { Text = r.Text, Rating = r.Rating }).ToList()
             }
         };
     }

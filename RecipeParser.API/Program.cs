@@ -1,8 +1,7 @@
 using System.Net;
 using System.Reflection;
-using AngleSharp;
-using AngleSharp.Io;
-using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
+using Jering.Javascript.NodeJS;
+using Microsoft.OpenApi.Models;
 using RecipeParser.Application.Services;
 using RecipeParser.Domain.Interfaces;
 using HttpVersion = System.Net.HttpVersion;
@@ -18,6 +17,8 @@ builder.Configuration
 
 builder.Services.AddControllers();
 
+builder.Services.AddSingleton<IPlaywrightBrowser, PlaywrightBrowser>();
+builder.Services.AddScoped<IPageFetcher, PlaywrightPageFetcher>();
 builder.Services.AddTransient<IRecipeParserService, RecipeParserService>();
 
 builder.Services.AddHttpClient("recipe-fetcher", client =>
@@ -38,11 +39,31 @@ builder.Services.AddHttpClient("recipe-fetcher", client =>
     MaxConnectionsPerServer = 8
 });
 
+builder.Services.Configure<NodeJSProcessOptions>(opts =>
+{
+    opts.ProjectPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Node");
+});
+builder.Services.AddNodeJS();
 builder.Services.AddEndpointsApiExplorer();
 
 if (builder.Environment.IsDevelopment())
 {
-    builder.Services.AddSwaggerGen();
+    builder.Services.AddSwaggerGen(c =>
+    {
+        c.SwaggerDoc("v1", new OpenApiInfo
+        {
+            Version = "v1",
+            Title = "Sporkast API",
+            Description = "Sporkast's Recipe Parsing API",
+            Contact = new OpenApiContact
+            {
+                Email = "sporkast-dev@tomk.online",
+                Name = "Sporkast Developer",
+            }
+        });
+        var filePath = Path.Combine(AppContext.BaseDirectory, "RecipeParser.API.xml");
+        c.IncludeXmlComments(filePath);
+    });
     builder.Configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
 }
 
@@ -60,3 +81,4 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.MapControllers();
 app.Run();
+

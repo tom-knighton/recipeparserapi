@@ -1,14 +1,31 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
+using RecipeParser.Domain.Interfaces;
+using RecipeParser.Domain.Models;
+using RecipeParser.Domain.Requests;
 
 namespace RecipeParser.Controllers;
 
 [ApiController]
 [Route("[controller]")]
-public class ParserController: ControllerBase
+public class ParserController(IRecipeParserService parser): ControllerBase
 {
+    /// <summary>
+    /// Takes a URL to a recipe page and attempts to parse the recipe data from it.
+    /// </summary>
     [HttpPost("Parse")]
-    public async Task<IActionResult> Parse()
+    [ProducesResponseType<Recipe>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Parse([Required] [FromBody] ParseUrlRequest request)
     {
-        return Ok();
+        try
+        {
+            var result = await parser.ParseRecipeByUrl(request.Url);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 }

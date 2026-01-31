@@ -5,6 +5,7 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <RootNamespace>RecipeParser</RootNamespace>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
     </PropertyGroup>
 
     <ItemGroup>
@@ -18,5 +19,15 @@
       <ProjectReference Include="..\RecipeParser.Application\RecipeParser.Application.csproj" />
       <ProjectReference Include="..\RecipeParser.Domain\RecipeParser.Domain.csproj" />
     </ItemGroup>
+
+
+    <ItemGroup>
+        <Content Include="..\RecipeParser.Application\Services\Node\**\*">
+            <Link>Node\%(RecursiveDir)%(Filename)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+        </Content>
+    </ItemGroup>
+
 
 </Project>
