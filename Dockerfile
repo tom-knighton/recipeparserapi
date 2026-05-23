@@ -1,5 +1,5 @@
-# Use the official .NET 9.0 SDK image for build
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+# Use the official .NET 10.0 SDK image for build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /app
 
 # Copy csproj and restore as distinct layers
@@ -28,8 +28,8 @@ RUN mkdir -p /out/Node \
  && cp -a ${NODE_DIR}/*.js /out/Node/ 2>/dev/null || true \
  && cp -a ${NODE_DIR}/*.cjs /out/Node/ 2>/dev/null || true
 
-# Use the official .NET 9.0 runtime image for the final container
-FROM mcr.microsoft.com/dotnet/aspnet:9.0
+# Use the official .NET 10.0 runtime image for the final container
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 
 # Install Node
