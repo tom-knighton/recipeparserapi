@@ -1,26 +1,26 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Playwright;
 using RecipeParser.Domain.Interfaces;
 
-namespace RecipeParser.Application.Services;
+namespace RecipeParser.Infrastructure.Services;
 
-using Microsoft.Playwright;
-
-public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser) : IPageFetcher
+public sealed class PlaywrightPageFetcher(IPlaywrightBrowser browser, HttpClient httpClient) : IPageFetcher
 {
-    private static readonly HttpClient HttpClient = new();
-
-    static PlaywrightPageFetcher()
-    {
-        HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-    }
-
     public async Task<string> GetStaticHtmlAsync(string url, CancellationToken ct = default)
     {
-        return await HttpClient.GetStringAsync(url, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadAsStringAsync(ct);
     }
 
-    public async Task<IReadOnlyList<string>> GetRenderedJsonLdAsync(
-        string url, TimeSpan timeout, CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> GetRenderedJsonLdAsync(string url, TimeSpan timeout, CancellationToken ct = default)
     {
         var ctx = await browser.NewContextAsync(new()
         {

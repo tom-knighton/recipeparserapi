@@ -4,6 +4,7 @@ using Jering.Javascript.NodeJS;
 using Microsoft.OpenApi.Models;
 using RecipeParser.Application.Services;
 using RecipeParser.Domain.Interfaces;
+using RecipeParser.Infrastructure;
 using HttpVersion = System.Net.HttpVersion;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -14,12 +15,15 @@ builder.Configuration
     .AddJsonFile($"appsettings.{environmentName}.json", false)
     .AddEnvironmentVariables();
 
+if (builder.Environment.IsDevelopment())
+{
+    builder.Configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
+}
 
 builder.Services.AddControllers();
 
-builder.Services.AddSingleton<IPlaywrightBrowser, PlaywrightBrowser>();
-builder.Services.AddScoped<IPageFetcher, PlaywrightPageFetcher>();
 builder.Services.AddTransient<IRecipeParserService, RecipeParserService>();
+builder.Services.AddRecipeParserInfrastructure(builder.Configuration);
 
 builder.Services.AddHttpClient("recipe-fetcher", client =>
 {
@@ -64,7 +68,6 @@ if (builder.Environment.IsDevelopment())
         var filePath = Path.Combine(AppContext.BaseDirectory, "RecipeParser.API.xml");
         c.IncludeXmlComments(filePath);
     });
-    builder.Configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
 }
 
 builder.Services.AddOpenApi();
@@ -81,4 +84,3 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.MapControllers();
 app.Run();
-

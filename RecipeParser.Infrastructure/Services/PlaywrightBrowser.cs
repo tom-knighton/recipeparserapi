@@ -1,7 +1,9 @@
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Playwright;
 using RecipeParser.Domain.Interfaces;
 
-namespace RecipeParser.Application.Services;
+namespace RecipeParser.Infrastructure.Services;
 
 public sealed class PlaywrightBrowser : IPlaywrightBrowser
 {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using AngleSharp;
 using Jering.Javascript.NodeJS;
 using RecipeParser.Domain.Exceptions;
@@ -8,19 +9,24 @@ using RecipeParser.Domain.Models;
 
 namespace RecipeParser.Application.Services;
 
-public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRecipeParserService
+public partial class RecipeParserService(INodeJSService node, IPageFetcher fetcher, IRecipeDescriptionParser? descriptionParser = null): IRecipeParserService
 {
     public async Task<Recipe> ParseRecipeByUrl(string url)
     {
-        var jsonRecipe = await TryParseSchema(url);
-
         Recipe? recipe = null;
-        if (jsonRecipe is not null)
+        if (url.StartsWith("https://www.instagram.com/reel/") || url.StartsWith("https://www.tiktok.com/@"))
         {
-            recipe = jsonRecipe;
+            recipe = await TryParseSocialPost(url);
+        }
+        else
+        {
+            recipe = await TryParseSchema(url);
         }
 
-        var ingredientTasks = (recipe?.RawIngredients ?? [])
+        if (recipe is null)
+            throw new NoRecipeFoundException();
+
+        var ingredientTasks = recipe.RawIngredients
             .Select(async ingredient =>
             {
                 var result = await node.InvokeFromFileAsync<IngredientResult>(
@@ -35,14 +41,14 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
         var ingredientResults = await Task.WhenAll(ingredientTasks);
         foreach (var (_, result) in ingredientResults)
         {
-            if (result is not null && recipe is not null)
+            if (result is not null)
                 recipe.Ingredients.Add(result);
         }
 
         var stepTasks = new List<Task<(RecipeStep step, InstructionResult? result)>>();
-        foreach (var stepSection in recipe?.StepSections ?? [])
+        foreach (var stepSection in recipe.StepSections ?? [])
         {
-            foreach (var step in stepSection.Steps)
+            foreach (var step in stepSection.Steps ?? [])
             {
                 var stepCopy = step;
                 stepTasks.Add(
@@ -79,10 +85,7 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
             }
         }
         
-        if (recipe is not null)
-            return recipe;
-
-        throw new NoRecipeFoundException();
+        return recipe;
     }
 
     private async Task<Recipe?> TryParseSchema(string url)
@@ -102,6 +105,31 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
 
         return null;
     }
+
+    private async Task<Recipe?> TryParseSocialPost(string url)
+    {
+        var staticHtml = await fetcher.GetStaticHtmlAsync(url);
+        var post = ExtractSocialPost(staticHtml, url);
+
+        foreach (var recipeUrl in GetPotentialRecipeUrls(post, url))
+        {
+            try
+            {
+                var linkedRecipe = await TryParseSchema(recipeUrl);
+                if (linkedRecipe is not null)
+                    return linkedRecipe;
+            }
+            catch
+            {
+                // Social posts often include dead or tracking-wrapped links. Keep falling back.
+            }
+        }
+
+        if (descriptionParser is null || string.IsNullOrWhiteSpace(post.Description))
+            return null;
+
+        return await descriptionParser.ParseRecipeFromDescription(post.Description, url);
+    }
     
     private static IReadOnlyList<string> ExtractLdJsonStrings(string html)
     {
@@ -114,6 +142,141 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
             if (!string.IsNullOrWhiteSpace(txt)) list.Add(txt);
         }
         return list;
+    }
+
+    private static SocialPost ExtractSocialPost(string html, string sourceUrl)
+    {
+        var doc = AngleSharp.BrowsingContext.New(AngleSharp.Configuration.Default)
+            .OpenAsync(req => req.Content(html)).GetAwaiter().GetResult();
+
+        var description =
+            ExtractCaptionFromMeta(doc.QuerySelector("meta[property='og:title']")?.GetAttribute("content"))
+            ?? ExtractCaptionFromMeta(doc.QuerySelector("meta[name='twitter:title']")?.GetAttribute("content"))
+            ?? ExtractCaptionFromMeta(doc.QuerySelector("meta[property='twitter:title']")?.GetAttribute("content"))
+            ?? ExtractCaptionFromMeta(doc.QuerySelector("meta[property='og:description']")?.GetAttribute("content"))
+            ?? ExtractCaptionFromMeta(doc.QuerySelector("meta[name='twitter:description']")?.GetAttribute("content"))
+            ?? ExtractCaptionFromMeta(doc.QuerySelector("meta[property='twitter:description']")?.GetAttribute("content"))
+            ?? ExtractCaptionFromMeta(doc.QuerySelector("meta[name='description']")?.GetAttribute("content"))
+            ?? doc.QuerySelector("meta[property='og:description']")?.GetAttribute("content")
+            ?? doc.QuerySelector("meta[name='twitter:description']")?.GetAttribute("content")
+            ?? doc.QuerySelector("meta[property='twitter:description']")?.GetAttribute("content")
+            ?? doc.QuerySelector("meta[itemprop='description']")?.GetAttribute("content")
+            ?? doc.QuerySelector("[itemprop='caption']")?.TextContent
+            ?? doc.QuerySelector("figcaption")?.TextContent
+            ?? doc.QuerySelector("meta[name='description']")?.GetAttribute("content")
+            ?? ExtractDescriptionFromJsonLd(doc);
+
+        description = NormalizeSocialDescription(description);
+
+        var links = new List<SocialPostLink>();
+        foreach (var anchor in doc.QuerySelectorAll("a[href]"))
+        {
+            var href = anchor.GetAttribute("href");
+            if (string.IsNullOrWhiteSpace(href))
+                continue;
+
+            if (Uri.TryCreate(new Uri(sourceUrl), href, out var uri))
+                links.Add(new SocialPostLink(uri.ToString(), anchor.TextContent?.Trim() ?? ""));
+        }
+
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            foreach (Match match in UrlRegex().Matches(description))
+                links.Add(new SocialPostLink(match.Value.TrimEnd('.', ',', ')'), ""));
+        }
+
+        return new SocialPost(description, links);
+    }
+
+    private static string? ExtractCaptionFromMeta(string? value)
+    {
+        value = NormalizeSocialDescription(value);
+        if (value is null)
+            return null;
+
+        var quotedCaption = InstagramQuotedCaptionRegex().Match(value);
+        if (quotedCaption.Success)
+            return NormalizeSocialDescription(quotedCaption.Groups["caption"].Value);
+
+        return null;
+    }
+
+    private static string? ExtractDescriptionFromJsonLd(AngleSharp.Dom.IDocument doc)
+    {
+        foreach (var script in doc.QuerySelectorAll("script[type='application/ld+json']"))
+        {
+            foreach (var node in ExpandCandidates(script.TextContent))
+            {
+                var description = node["caption"]?.ToString()
+                                  ?? node["description"]?.ToString()
+                                  ?? node["text"]?.ToString();
+
+                description = NormalizeSocialDescription(description);
+                if (description is not null)
+                    return description;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeSocialDescription(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description))
+            return null;
+
+        var cleaned = Regex.Replace(description, @"\s+", " ").Trim();
+        if (IsSocialBoilerplate(cleaned))
+            return null;
+
+        return IsSocialBoilerplate(cleaned) ? null : cleaned;
+    }
+
+    private static bool IsSocialBoilerplate(string value)
+    {
+        var normalized = value.Trim().TrimEnd('.', '|').Trim();
+        return normalized.Equals("Instagram", StringComparison.OrdinalIgnoreCase)
+               || normalized.Equals("TikTok", StringComparison.OrdinalIgnoreCase)
+               || normalized.Equals("TikTok - Make Your Day", StringComparison.OrdinalIgnoreCase)
+               || normalized.Equals("Facebook", StringComparison.OrdinalIgnoreCase)
+               || normalized.Equals("Threads", StringComparison.OrdinalIgnoreCase)
+               || normalized.Equals("X", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> GetPotentialRecipeUrls(SocialPost post, string sourceUrl)
+    {
+        var sourceHost = new Uri(sourceUrl).Host;
+
+        return post.Links
+            .Where(link => Uri.TryCreate(link.Url, UriKind.Absolute, out var uri)
+                           && !IsSocialHost(uri.Host)
+                           && !uri.Host.Equals(sourceHost, StringComparison.OrdinalIgnoreCase)
+                           && LooksLikeRecipeLink(uri, link.Text))
+            .Select(link => link.Url)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeRecipeLink(Uri uri, string linkText)
+    {
+        var haystack = $"{uri.Host} {uri.AbsolutePath} {linkText}".ToLowerInvariant();
+        return haystack.Contains("recipe")
+               || haystack.Contains("recipes")
+               || haystack.Contains("ingredients")
+               || haystack.Contains("method")
+               || haystack.Contains("cook");
+    }
+
+    private static bool IsSocialHost(string host)
+    {
+        var lowerHost = host.ToLowerInvariant();
+        return lowerHost.Contains("instagram.")
+               || lowerHost.Contains("tiktok.")
+               || lowerHost.Contains("facebook.")
+               || lowerHost.Contains("threads.")
+               || lowerHost.Contains("twitter.")
+               || lowerHost.Contains("x.com")
+               || lowerHost.Contains("youtube.")
+               || lowerHost.Contains("youtu.be");
     }
 
     private static List<JsonObject> CollectRecipeNodes(IEnumerable<string> scripts)
@@ -398,7 +561,7 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
                 [
                     new RecipeStepSection
                     {
-                        Steps = steps.SelectMany(s => s.Steps).ToList(),
+                        Steps = steps.SelectMany(s => s.Steps ?? []).ToList(),
                     }
                 ];
             }
@@ -437,4 +600,13 @@ public class RecipeParserService(INodeJSService node, IPageFetcher fetcher): IRe
         if (string.IsNullOrWhiteSpace(iso)) return null;
         try { return System.Xml.XmlConvert.ToTimeSpan(iso); } catch { return null; }
     }
+
+    private sealed record SocialPost(string? Description, List<SocialPostLink> Links);
+    private sealed record SocialPostLink(string Url, string Text);
+
+    [GeneratedRegex(@"https?://[^\s<>""]+", RegexOptions.IgnoreCase)]
+    private static partial Regex UrlRegex();
+
+    [GeneratedRegex("^[^:]+:\\s*\"(?<caption>.+)\"$")]
+    private static partial Regex InstagramQuotedCaptionRegex();
 }
