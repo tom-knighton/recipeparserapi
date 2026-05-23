@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
@@ -14,7 +15,8 @@ namespace RecipeParser.Infrastructure.Services;
 
 public sealed class OpenAiRecipeDescriptionParser(
     HttpClient httpClient,
-    IOptions<OpenAiRecipeParserOptions> options) : IRecipeDescriptionParser
+    IOptions<OpenAiRecipeParserOptions> options,
+    ILogger<OpenAiRecipeDescriptionParser> logger) : IRecipeDescriptionParser
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -31,6 +33,9 @@ public sealed class OpenAiRecipeDescriptionParser(
         request.Content = JsonContent.Create(CreateRequest(description, sourceUrl), options: JsonOptions);
 
         using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+            await LogOpenAiErrorResponse(response, ct);
+
         response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
@@ -45,6 +50,19 @@ public sealed class OpenAiRecipeDescriptionParser(
             return null;
 
         return parsed.ToRecipe(sourceUrl);
+    }
+
+    private async Task LogOpenAiErrorResponse(HttpResponseMessage response, CancellationToken ct)
+    {
+        var responseBody = await response.Content.ReadAsStringAsync(ct);
+        logger.LogError(
+            "OpenAI recipe parsing request failed with {StatusCode} {ReasonPhrase}. RequestUri: {RequestUri}. ResponseHeaders: {ResponseHeaders}. ContentHeaders: {ContentHeaders}. ResponseBody: {ResponseBody}",
+            (int)response.StatusCode,
+            response.ReasonPhrase,
+            response.RequestMessage?.RequestUri,
+            string.Join("; ", response.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}")),
+            string.Join("; ", response.Content.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}")),
+            responseBody);
     }
 
     private object CreateRequest(string description, string sourceUrl)
