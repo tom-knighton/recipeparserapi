@@ -13,7 +13,7 @@ public sealed class DiscoveryStartupSyncService(
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (!options.Value.RunCuratedCandidateSyncOnStartup)
+        if (!options.Value.RunCuratedCandidateSyncOnStartup && !options.Value.RunSourceCandidateSyncOnStartup)
             return;
 
         try
@@ -22,7 +22,12 @@ public sealed class DiscoveryStartupSyncService(
             var ingestion = scope.ServiceProvider.GetRequiredService<IDiscoveryCandidateIngestionService>();
             var store = scope.ServiceProvider.GetRequiredService<IDiscoveryStore>();
 
-            await ingestion.SyncCuratedCandidates(cancellationToken);
+            if (options.Value.RunCuratedCandidateSyncOnStartup && options.Value.RunSourceCandidateSyncOnStartup)
+                await ingestion.SyncCandidates(cancellationToken);
+            else if (options.Value.RunCuratedCandidateSyncOnStartup)
+                await ingestion.SyncCuratedCandidates(cancellationToken);
+            else
+                await ingestion.SyncSourceCandidates(cancellationToken);
             await store.DeleteExpiredFeedCaches(cancellationToken);
 
             var retentionDays = Math.Max(1, options.Value.FeedbackRetentionDays);

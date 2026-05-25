@@ -26,6 +26,9 @@ public interface IDiscoveryCandidateProvider
 public interface IDiscoveryCandidateIngestionService
 {
     Task<int> SyncCuratedCandidates(CancellationToken ct = default);
+    Task<int> SyncSourceCandidates(CancellationToken ct = default);
+    Task<int> SyncUserSourceCandidates(IReadOnlyCollection<string> sourceDomains, CancellationToken ct = default);
+    Task<int> SyncCandidates(CancellationToken ct = default);
 }
 
 public interface IDiscoveryRankingService

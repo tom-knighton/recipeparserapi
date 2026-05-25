@@ -75,6 +75,12 @@ public sealed class EfDiscoveryStore(DiscoveryDbContext db) : IDiscoveryStore
 
     public async Task UpsertCandidates(IReadOnlyList<DiscoveryCandidate> candidates, CancellationToken ct = default)
     {
+        foreach (var candidate in candidates)
+        {
+            candidate.FirstSeenAt = ToUtcOffset(candidate.FirstSeenAt);
+            candidate.LastSeenAt = ToUtcOffset(candidate.LastSeenAt);
+        }
+
         var normalizedUrls = candidates.Select(c => c.NormalizedSourceUrl).ToList();
         var existing = await db.DiscoveryCandidates
             .Where(c => normalizedUrls.Contains(c.NormalizedSourceUrl))
@@ -135,6 +141,7 @@ public sealed class EfDiscoveryStore(DiscoveryDbContext db) : IDiscoveryStore
 
     public async Task AddFeedback(DiscoveryFeedbackEvent feedbackEvent, CancellationToken ct = default)
     {
+        feedbackEvent.CreatedAt = ToUtcOffset(feedbackEvent.CreatedAt);
         db.DiscoveryFeedbackEvents.Add(feedbackEvent);
         await db.SaveChangesAsync(ct);
     }
@@ -150,6 +157,7 @@ public sealed class EfDiscoveryStore(DiscoveryDbContext db) : IDiscoveryStore
     public async Task SetFeedCache(Guid profileId, string cacheKey, string responseJson, DateTimeOffset expiresAt, CancellationToken ct = default)
     {
         var now = DateTimeOffset.UtcNow;
+        expiresAt = ToUtcOffset(expiresAt);
         var cache = await db.DiscoveryFeedCaches
             .FirstOrDefaultAsync(c => c.ProfileId == profileId && c.CacheKey == cacheKey, ct);
 
@@ -183,10 +191,13 @@ public sealed class EfDiscoveryStore(DiscoveryDbContext db) : IDiscoveryStore
 
     public Task<int> DeleteFeedbackOlderThan(DateTimeOffset cutoff, CancellationToken ct = default)
     {
+        cutoff = ToUtcOffset(cutoff);
         return db.DiscoveryFeedbackEvents
             .Where(e => e.CreatedAt < cutoff)
             .ExecuteDeleteAsync(ct);
     }
 
     private static double WeightFor(int seenCount) => Math.Log(Math.Max(1, seenCount) + 1, 2);
+
+    private static DateTimeOffset ToUtcOffset(DateTimeOffset value) => value.ToUniversalTime();
 }

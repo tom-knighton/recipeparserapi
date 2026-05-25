@@ -32,8 +32,16 @@ public static class DependencyInjection
 
         services.AddScoped<IDiscoveryStore, EfDiscoveryStore>();
         services.AddScoped<IDiscoveryCandidateProvider, ConfiguredDiscoveryCandidateProvider>();
-        services.AddScoped<IDiscoveryCandidateIngestionService, CuratedDiscoveryCandidateIngestionService>();
+        services.AddHttpClient<IDiscoveryCandidateIngestionService, DiscoveryCandidateIngestionService>((serviceProvider, client) =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<DiscoveryOptions>>().Value;
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.SourceRequestTimeoutSeconds, 3, 60));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "SporkastRecipeDiscovery/1.0 (+https://sporkast.app; recipe metadata discovery)");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/rss+xml,application/atom+xml,application/xml;q=0.9,text/html;q=0.8,*/*;q=0.5");
+        });
         services.AddHostedService<DiscoveryStartupSyncService>();
+        services.AddHostedService<DiscoveryCandidateRefreshService>();
 
         services.AddHttpClient<IRecipeDescriptionParser, OpenAiRecipeDescriptionParser>((serviceProvider, client) =>
         {
