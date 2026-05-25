@@ -1,21 +1,5 @@
 {
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft.AspNetCore": "Warning"
-    }
-  },
-  "OpenAI": {
-    "Model": "gpt-4.1-mini"
-  },
-  "ConnectionStrings": {
-    "Discovery": ""
-  },
   "Discovery": {
-    "UseOpenAIReasons": false,
-    "RunCuratedCandidateSyncOnStartup": true,
-    "FeedCacheMinutes": 30,
-    "FeedbackRetentionDays": 180,
     "CuratedCandidates": [
       {
         "SourceUrl": "https://www.bbcgoodfood.com/recipes/spiced-carrot-lentil-soup",
@@ -173,6 +157,5 @@
         "Tags": [ "pasta", "beef", "slow-cook", "comfort", "weekend" ]
       }
     ]
-  },
-  "AllowedHosts": "*"
+  }
 }

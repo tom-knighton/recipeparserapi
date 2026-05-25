@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using Jering.Javascript.NodeJS;
 using Microsoft.OpenApi.Models;
+using RecipeParser.Application;
 using RecipeParser.Application.Services;
 using RecipeParser.Domain.Interfaces;
 using RecipeParser.Infrastructure;
@@ -22,7 +23,7 @@ if (builder.Environment.IsDevelopment())
 
 builder.Services.AddControllers();
 
-builder.Services.AddTransient<IRecipeParserService, RecipeParserService>();
+builder.Services.AddRecipeParserApplication();
 builder.Services.AddRecipeParserInfrastructure(builder.Configuration);
 
 builder.Services.AddHttpClient("recipe-fetcher", client =>
