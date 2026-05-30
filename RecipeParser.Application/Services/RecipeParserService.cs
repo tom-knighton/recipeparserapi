@@ -1,15 +1,22 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using System.Net;
+using System.Net.Http;
 using AngleSharp;
 using Jering.Javascript.NodeJS;
+using Microsoft.Extensions.Logging;
 using RecipeParser.Domain.Exceptions;
 using RecipeParser.Domain.Interfaces;
 using RecipeParser.Domain.Models;
 
 namespace RecipeParser.Application.Services;
 
-public partial class RecipeParserService(INodeJSService node, IPageFetcher fetcher, IRecipeDescriptionParser? descriptionParser = null): IRecipeParserService
+public partial class RecipeParserService(
+    INodeJSService node,
+    IPageFetcher fetcher,
+    IRecipeDescriptionParser? descriptionParser = null,
+    ILogger<RecipeParserService>? logger = null): IRecipeParserService
 {
     public async Task<Recipe> ParseRecipeByUrl(string url)
     {
@@ -90,20 +97,123 @@ public partial class RecipeParserService(INodeJSService node, IPageFetcher fetch
 
     private async Task<Recipe?> TryParseSchema(string url)
     {
-        var staticHtml = await fetcher.GetStaticHtmlAsync(url);
-        var staticScripts = ExtractLdJsonStrings(staticHtml);
+        var sourceUri = Uri.TryCreate(url, UriKind.Absolute, out var parsedUri) ? parsedUri : null;
+        if (sourceUri is not null)
+        {
+            var apiRecipe = await TryParseTasteOfHomeApi(sourceUri);
+            if (apiRecipe is not null)
+                return apiRecipe;
+        }
 
-        var recipeNodes = CollectRecipeNodes(staticScripts);
-        if (IsComplete(recipeNodes))
-            return MapRecipeFromSchema(MergeRecipeNodes(recipeNodes), url);
+        HttpRequestException? staticFetchException = null;
 
-        var renderedScripts = await fetcher.GetRenderedJsonLdAsync(url, timeout: TimeSpan.FromSeconds(15));
-        var renderedNodes = CollectRecipeNodes(renderedScripts);
+        try
+        {
+            var staticHtml = await fetcher.GetStaticHtmlAsync(url);
+            var staticScripts = ExtractLdJsonStrings(staticHtml);
+
+            var recipeNodes = CollectRecipeNodes(staticScripts);
+            if (IsComplete(recipeNodes))
+                return MapRecipeFromSchema(MergeRecipeNodes(recipeNodes), url);
+        }
+        catch (HttpRequestException ex) when (ShouldTryRenderedFallback(ex.StatusCode))
+        {
+            logger?.LogInformation(
+                ex,
+                "Static recipe fetch failed for {Url} with {StatusCode}; trying rendered JSON-LD fallback.",
+                url,
+                ex.StatusCode);
+            staticFetchException = ex;
+        }
+
+        List<JsonObject> renderedNodes;
+        try
+        {
+            logger?.LogInformation("Trying rendered JSON-LD fallback for {Url}.", url);
+            var renderedScripts = await fetcher.GetRenderedJsonLdAsync(url, timeout: TimeSpan.FromSeconds(15));
+            renderedNodes = CollectRecipeNodes(renderedScripts);
+        }
+        catch (Exception ex) when (staticFetchException is not null)
+        {
+            logger?.LogWarning(
+                ex,
+                "Rendered JSON-LD fallback failed for {Url}; returning original static fetch failure {StatusCode}.",
+                url,
+                staticFetchException.StatusCode);
+            throw staticFetchException;
+        }
 
         if (renderedNodes.Count > 0)
+        {
+            logger?.LogInformation("Rendered JSON-LD fallback found {RecipeNodeCount} recipe node(s) for {Url}.", renderedNodes.Count, url);
             return MapRecipeFromSchema(MergeRecipeNodes(renderedNodes), url);
+        }
+
+        if (staticFetchException is not null)
+        {
+            logger?.LogInformation(
+                "Rendered JSON-LD fallback found no recipe nodes for {Url}; returning original static fetch failure {StatusCode}.",
+                url,
+                staticFetchException.StatusCode);
+            throw staticFetchException;
+        }
 
         return null;
+    }
+
+    private async Task<Recipe?> TryParseTasteOfHomeApi(Uri sourceUri)
+    {
+        if (!IsTasteOfHomeRecipeUrl(sourceUri, out var slug))
+            return null;
+
+        var apiUrl = $"https://www.tasteofhome.com/wp-json/wp/v2/recipe?slug={Uri.EscapeDataString(slug)}";
+        try
+        {
+            logger?.LogInformation("Trying Taste of Home recipe API {ApiUrl} for {Url}.", apiUrl, sourceUri);
+            var json = await fetcher.GetStaticHtmlAsync(apiUrl);
+            var root = JsonNode.Parse(json);
+            var post = root is JsonArray posts ? posts.OfType<JsonObject>().FirstOrDefault() : root as JsonObject;
+            if (post?["recipe_schema"] is not JsonObject schema)
+            {
+                logger?.LogInformation("Taste of Home recipe API returned no recipe_schema for {Url}.", sourceUri);
+                return null;
+            }
+
+            var recipe = MapRecipeFromSchema(schema, sourceUri.ToString());
+            if (recipe is null)
+                logger?.LogInformation("Taste of Home recipe API returned recipe_schema that could not be mapped for {Url}.", sourceUri);
+            else
+                logger?.LogInformation("Taste of Home recipe API parsed recipe for {Url}.", sourceUri);
+
+            return recipe;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            logger?.LogInformation(ex, "Taste of Home recipe API failed for {ApiUrl}; falling back to page parsing.", apiUrl);
+            return null;
+        }
+    }
+
+    private static bool IsTasteOfHomeRecipeUrl(Uri uri, out string slug)
+    {
+        slug = "";
+        if (!uri.Host.EndsWith("tasteofhome.com", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var segments = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2 || !segments[0].Equals("recipes", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        slug = segments[1];
+        return !string.IsNullOrWhiteSpace(slug);
+    }
+
+    private static bool ShouldTryRenderedFallback(HttpStatusCode? statusCode)
+    {
+        return statusCode is HttpStatusCode.Forbidden
+            or HttpStatusCode.Unauthorized
+            or HttpStatusCode.NotAcceptable
+            or HttpStatusCode.TooManyRequests;
     }
 
     private async Task<Recipe?> TryParseSocialPost(string url)
