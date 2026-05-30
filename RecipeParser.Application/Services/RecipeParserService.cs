@@ -402,7 +402,21 @@ public partial class RecipeParserService(
     {
         if (nodes.Count == 0) return false;
         var merged = MergeRecipeNodes(nodes);
-        return merged.ContainsKey("comment") && (merged.ContainsKey("recipeIngredient") || merged.ContainsKey("aggregateRating"));
+        return HasNonEmptyValue(merged, "name")
+               && HasNonEmptyArray(merged, "recipeIngredient")
+               && HasNonEmptyArray(merged, "recipeInstructions");
+    }
+
+    private static bool HasNonEmptyValue(JsonObject node, string key)
+    {
+        return node.TryGetPropertyValue(key, out var value)
+               && !string.IsNullOrWhiteSpace(value?.ToString());
+    }
+
+    private static bool HasNonEmptyArray(JsonObject node, string key)
+    {
+        return node.TryGetPropertyValue(key, out var value)
+               && value is JsonArray { Count: > 0 };
     }
     
     private static JsonObject MergeRecipeNodes(List<JsonObject> nodes)

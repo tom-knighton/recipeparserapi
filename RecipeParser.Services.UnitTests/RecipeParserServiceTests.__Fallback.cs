@@ -43,6 +43,23 @@ public class RecipeParserServiceFallbackTests
         fetcher.RenderedCalls.ShouldBe(1);
     }
 
+    [Test]
+    public async Task ParseRecipeByUrl_WhenStaticRecipeHasNoCommentsOrRatings_ParsesWithoutRenderedFallback()
+    {
+        var node = CreateNodeParser();
+        var fetcher = new StaticRecipeWithoutSocialProofFetcher();
+        var sut = new RecipeParserService(node, fetcher);
+
+        var result = await sut.ParseRecipeByUrl("https://foodieholly.com/2026/05/25/charcuterie-pesto-pasta-salad/");
+
+        result.Title.ShouldBe("Charcuterie Pesto Pasta Salad");
+        result.RawIngredients.ShouldContain("200 g pasta");
+        result.StepSections.Single().Steps.ShouldNotBeNull();
+        result.StepSections.Single().Steps!.Count.ShouldBe(1);
+        result.Ratings.TotalRatings.ShouldBe(0);
+        fetcher.RenderedCalls.ShouldBe(0);
+    }
+
     private static INodeJSService CreateNodeParser()
     {
         var node = Substitute.For<INodeJSService>();
@@ -133,6 +150,48 @@ public class RecipeParserServiceFallbackTests
                 }
                 """
             ]);
+        }
+    }
+
+    private sealed class StaticRecipeWithoutSocialProofFetcher : IPageFetcher
+    {
+        public int RenderedCalls { get; private set; }
+
+        public Task<string> GetStaticHtmlAsync(string url, CancellationToken ct = default)
+        {
+            return Task.FromResult(
+                """
+                <html>
+                <head>
+                  <script type="application/ld+json">
+                  {
+                    "@context": "https://schema.org",
+                    "@type": "Recipe",
+                    "@id": "https://foodieholly.com/2026/05/25/charcuterie-pesto-pasta-salad/#recipe",
+                    "name": "Charcuterie Pesto Pasta Salad",
+                    "description": "A pesto pasta salad with charcuterie board flavours.",
+                    "recipeYield": ["4"],
+                    "prepTime": "PT5M",
+                    "cookTime": "PT10M",
+                    "recipeIngredient": ["200 g pasta", "50 g salami"],
+                    "recipeInstructions": [
+                      {
+                        "@type": "HowToStep",
+                        "text": "Cook the pasta, drain, then toss with the remaining ingredients."
+                      }
+                    ]
+                  }
+                  </script>
+                </head>
+                <body></body>
+                </html>
+                """);
+        }
+
+        public Task<IReadOnlyList<string>> GetRenderedJsonLdAsync(string url, TimeSpan timeout, CancellationToken ct = default)
+        {
+            RenderedCalls++;
+            return Task.FromResult<IReadOnlyList<string>>([]);
         }
     }
 }
