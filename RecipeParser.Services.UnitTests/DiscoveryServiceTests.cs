@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RecipeParser.Application.Services;
 using RecipeParser.Domain.Discovery;
@@ -120,7 +121,8 @@ public sealed class DiscoveryServiceTests
             new DiscoveryRankingService(store),
             new FakeReasonService(),
             store,
-            Options.Create(new DiscoveryOptions()));
+            Options.Create(new DiscoveryOptions()),
+            NullLogger<DiscoveryFeedService>.Instance);
     }
 
     private static DiscoveryCandidate Candidate(string url, string title, List<string> tags)

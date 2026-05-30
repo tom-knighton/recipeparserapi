@@ -11,10 +11,14 @@ public sealed class DiscoveryOptions
     public int SourceRequestTimeoutSeconds { get; set; } = 15;
     public int MaxCandidatesPerSource { get; set; } = 60;
     public int MaxDetailFetchesPerSource { get; set; } = 20;
+    public int SourceParallelism { get; set; } = 4;
+    public int SourceDetailParallelism { get; set; } = 4;
     public bool EnableUserSourceDiscovery { get; set; } = true;
     public int MaxUserSourceDomainsPerRefresh { get; set; } = 3;
     public int MaxCandidatesPerUserSource { get; set; } = 20;
     public int MaxDetailFetchesPerUserSource { get; set; } = 12;
+    public int UserSourceParallelism { get; set; } = 2;
+    public int ReasonGenerationParallelism { get; set; } = 6;
     public int UserSourceFailureCooldownHours { get; set; } = 24;
     public int UserSourceSuccessCooldownHours { get; set; } = 6;
     public int FeedCacheMinutes { get; set; } = 30;

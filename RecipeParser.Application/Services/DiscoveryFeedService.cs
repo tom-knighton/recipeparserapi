@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RecipeParser.Domain.Discovery;
 
@@ -12,7 +14,8 @@ public sealed class DiscoveryFeedService(
     IDiscoveryRankingService ranking,
     IDiscoveryReasonService reasons,
     IDiscoveryStore store,
-    IOptions<DiscoveryOptions> options) : IDiscoveryFeedService
+    IOptions<DiscoveryOptions> options,
+    ILogger<DiscoveryFeedService> logger) : IDiscoveryFeedService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> SupportedFeedbackEvents = new(StringComparer.OrdinalIgnoreCase)
@@ -22,44 +25,76 @@ public sealed class DiscoveryFeedService(
 
     public async Task<DiscoveryFeedResponse> GetFeed(DiscoveryFeedRequest request, CancellationToken ct = default)
     {
+        var totalStopwatch = Stopwatch.StartNew();
         var profile = await profiles.ResolveProfile(request.InstallationId, request.HomeId, request.Locale, ct);
         await profiles.RegisterSources(profile, request.SourceDomains, request.ExistingRecipeUrls, ct);
 
         var cacheKey = CacheKey(request);
         var cached = await store.GetFeedCache(profile.Id, cacheKey, ct);
         if (!string.IsNullOrWhiteSpace(cached))
+        {
+            logger.LogInformation("Discovery feed cache hit for profile {ProfileId} in {ElapsedMs}ms.", profile.Id, totalStopwatch.ElapsedMilliseconds);
             return JsonSerializer.Deserialize<DiscoveryFeedResponse>(cached, JsonOptions) ?? new DiscoveryFeedResponse();
+        }
 
         var preferredDomains = request.SourceDomains
             .Select(DiscoveryUrlNormalizer.NormalizeDomain)
             .OfType<string>()
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var candidatesStopwatch = Stopwatch.StartNew();
         var discovered = await candidates.GetCandidates(profile, preferredDomains, ct);
+        candidatesStopwatch.Stop();
+
+        var rankingStopwatch = Stopwatch.StartNew();
         var ranked = await ranking.Rank(profile, discovered, request, ct);
+        rankingStopwatch.Stop();
+
         var limit = Math.Clamp(request.Limit <= 0 ? 30 : request.Limit, 1, 60);
         var selected = ranked.Take(limit).ToList();
 
-        var items = new List<DiscoveryFeedItem>();
-        foreach (var item in selected)
+        var reasonsStopwatch = Stopwatch.StartNew();
+        var reasonParallelism = Math.Clamp(options.Value.ReasonGenerationParallelism, 1, 12);
+        using var reasonLimiter = new SemaphoreSlim(reasonParallelism, reasonParallelism);
+        var itemTasks = selected.Select(async item =>
         {
-            items.Add(new DiscoveryFeedItem
+            await reasonLimiter.WaitAsync(ct);
+            try
             {
-                Id = item.Candidate.Id.ToString("N"),
-                Title = item.Candidate.Title,
-                SourceUrl = item.Candidate.SourceUrl,
-                SourceDomain = item.Candidate.SourceDomain,
-                ImageUrl = item.Candidate.ImageUrl,
-                TotalMinutes = item.Candidate.TotalMinutes,
-                Rating = item.Candidate.Rating,
-                Tags = item.Candidate.Tags,
-                Reason = await reasons.CreateReason(profile, item.Candidate, item, request.Weather, ct)
-            });
-        }
+                var reason = await reasons.CreateReason(profile, item.Candidate, item, request.Weather, ct);
+                return new DiscoveryFeedItem
+                {
+                    Id = item.Candidate.Id.ToString("N"),
+                    Title = item.Candidate.Title,
+                    SourceUrl = item.Candidate.SourceUrl,
+                    SourceDomain = item.Candidate.SourceDomain,
+                    ImageUrl = item.Candidate.ImageUrl,
+                    TotalMinutes = item.Candidate.TotalMinutes,
+                    Rating = item.Candidate.Rating,
+                    Tags = item.Candidate.Tags,
+                    Reason = reason
+                };
+            }
+            finally
+            {
+                reasonLimiter.Release();
+            }
+        });
+        var items = (await Task.WhenAll(itemTasks)).ToList();
+        reasonsStopwatch.Stop();
 
         var response = BuildSections(items);
         var cacheMinutes = Math.Clamp(options.Value.FeedCacheMinutes, 1, 240);
         await store.SetFeedCache(profile.Id, cacheKey, JsonSerializer.Serialize(response, JsonOptions), DateTimeOffset.UtcNow.AddMinutes(cacheMinutes), ct);
+        logger.LogInformation(
+            "Discovery feed generated for profile {ProfileId} in {ElapsedMs}ms (candidates: {CandidatesMs}ms, ranking: {RankingMs}ms, reasons: {ReasonsMs}ms, discovered: {DiscoveredCount}, selected: {SelectedCount}).",
+            profile.Id,
+            totalStopwatch.ElapsedMilliseconds,
+            candidatesStopwatch.ElapsedMilliseconds,
+            rankingStopwatch.ElapsedMilliseconds,
+            reasonsStopwatch.ElapsedMilliseconds,
+            discovered.Count,
+            selected.Count);
         return response;
     }
 

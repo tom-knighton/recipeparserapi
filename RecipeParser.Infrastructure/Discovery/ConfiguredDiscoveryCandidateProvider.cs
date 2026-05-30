@@ -12,6 +12,7 @@ public sealed class ConfiguredDiscoveryCandidateProvider(
 {
     private static readonly SemaphoreSlim SparseRefreshLock = new(1, 1);
     private static DateTimeOffset _lastSparseRefresh = DateTimeOffset.MinValue;
+    private static int _userSourceRefreshInFlight;
 
     public Task<IReadOnlyList<DiscoveryCandidate>> GetCandidates(
         DiscoveryProfile profile,
@@ -23,8 +24,7 @@ public sealed class ConfiguredDiscoveryCandidateProvider(
         CancellationToken ct)
     {
         var candidates = await store.GetCandidates(preferredDomains, ct);
-        await RefreshUserSources(preferredDomains, ct);
-        candidates = await store.GetCandidates(preferredDomains, ct);
+        QueueUserSourceRefresh(preferredDomains);
 
         if (!options.Value.RefreshSourcesWhenFeedIsSparse ||
             candidates.Count >= Math.Max(1, options.Value.SparseFeedCandidateThreshold))
@@ -49,7 +49,7 @@ public sealed class ConfiguredDiscoveryCandidateProvider(
                 options.Value.SparseFeedCandidateThreshold);
 
             await ingestion.SyncSourceCandidates(ct);
-            await RefreshUserSources(preferredDomains, ct);
+            QueueUserSourceRefresh(preferredDomains);
             _lastSparseRefresh = DateTimeOffset.UtcNow;
             return await store.GetCandidates(preferredDomains, ct);
         }
@@ -59,18 +59,31 @@ public sealed class ConfiguredDiscoveryCandidateProvider(
         }
     }
 
-    private async Task RefreshUserSources(IReadOnlyCollection<string> preferredDomains, CancellationToken ct)
+    private void QueueUserSourceRefresh(IReadOnlyCollection<string> preferredDomains)
     {
         if (!options.Value.EnableUserSourceDiscovery || preferredDomains.Count == 0)
             return;
 
-        try
+        if (Interlocked.CompareExchange(ref _userSourceRefreshInFlight, 1, 0) != 0)
+            return;
+
+        var domains = preferredDomains.ToArray();
+        _ = Task.Run(async () =>
         {
-            await ingestion.SyncUserSourceCandidates(preferredDomains, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            logger.LogInformation(ex, "Discovery user source refresh failed.");
-        }
+            try
+            {
+                var refreshed = await ingestion.SyncUserSourceCandidates(domains, CancellationToken.None);
+                if (refreshed > 0)
+                    logger.LogInformation("Discovery user source refresh upserted {CandidateCount} candidates.", refreshed);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogInformation(ex, "Discovery user source refresh failed.");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _userSourceRefreshInFlight, 0);
+            }
+        });
     }
 }

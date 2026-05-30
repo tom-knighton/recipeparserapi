@@ -19,6 +19,7 @@ public sealed partial class DiscoveryCandidateIngestionService(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly SemaphoreSlim SyncLock = new(1, 1);
+    private static readonly Lock UserSourceStateLock = new();
     private static readonly Dictionary<string, DateTimeOffset> UserSourceLastSuccess = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, DateTimeOffset> UserSourceLastFailure = new(StringComparer.OrdinalIgnoreCase);
 
@@ -57,19 +58,21 @@ public sealed partial class DiscoveryCandidateIngestionService(
 
         try
         {
-            var candidates = new List<DiscoveryCandidate>();
-            foreach (var domain in domains)
+            var userSourceParallelism = Math.Clamp(options.Value.UserSourceParallelism, 1, 6);
+            using var userSourceLimiter = new SemaphoreSlim(userSourceParallelism, userSourceParallelism);
+            var domainTasks = domains.Select(async domain =>
             {
                 if (ShouldSkipUserDomain(domain, now))
-                    continue;
+                    return new List<DiscoveryCandidate>();
 
+                await userSourceLimiter.WaitAsync(ct);
                 try
                 {
                     if (!await IsSafePublicDomain(domain, ct))
                     {
                         MarkUserSourceFailure(domain, now);
                         logger.LogInformation("Discovery user source {Domain} skipped because it did not resolve to a public address.", domain);
-                        continue;
+                        return new List<DiscoveryCandidate>();
                     }
 
                     var source = UserSource(domain);
@@ -77,15 +80,15 @@ public sealed partial class DiscoveryCandidateIngestionService(
                     if (sourceCandidates.Count == 0)
                     {
                         MarkUserSourceFailure(domain, now);
-                        continue;
+                        return new List<DiscoveryCandidate>();
                     }
 
                     MarkUserSourceSuccess(domain, now);
-                    candidates.AddRange(sourceCandidates);
                     logger.LogInformation(
                         "Discovery user source {Domain} produced {CandidateCount} candidates.",
                         domain,
                         sourceCandidates.Count);
+                    return sourceCandidates;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -95,8 +98,15 @@ public sealed partial class DiscoveryCandidateIngestionService(
                 {
                     MarkUserSourceFailure(domain, now);
                     logger.LogInformation(ex, "Discovery user source {Domain} failed during candidate sync.", domain);
+                    return new List<DiscoveryCandidate>();
                 }
-            }
+                finally
+                {
+                    userSourceLimiter.Release();
+                }
+            });
+
+            var candidates = (await Task.WhenAll(domainTasks)).SelectMany(static list => list).ToList();
 
             candidates = candidates
                 .GroupBy(c => c.NormalizedSourceUrl, StringComparer.OrdinalIgnoreCase)
@@ -180,19 +190,20 @@ public sealed partial class DiscoveryCandidateIngestionService(
 
     private async Task<List<DiscoveryCandidate>> FetchSourceCandidates(DateTimeOffset now, CancellationToken ct)
     {
-        var candidates = new List<DiscoveryCandidate>();
         var sources = options.Value.Sources.Where(s => s.Enabled).ToList();
-
-        foreach (var source in sources)
+        var sourceParallelism = Math.Clamp(options.Value.SourceParallelism, 1, 8);
+        using var sourceLimiter = new SemaphoreSlim(sourceParallelism, sourceParallelism);
+        var sourceTasks = sources.Select(async source =>
         {
+            await sourceLimiter.WaitAsync(ct);
             try
             {
                 var sourceCandidates = await FetchSource(source, now, ct);
-                candidates.AddRange(sourceCandidates);
                 logger.LogInformation(
                     "Discovery source {SourceName} produced {CandidateCount} candidates.",
                     SourceName(source),
                     sourceCandidates.Count);
+                return sourceCandidates;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -201,10 +212,15 @@ public sealed partial class DiscoveryCandidateIngestionService(
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Discovery source {SourceName} failed during candidate sync.", SourceName(source));
+                return new List<DiscoveryCandidate>();
             }
-        }
+            finally
+            {
+                sourceLimiter.Release();
+            }
+        });
 
-        return candidates;
+        return (await Task.WhenAll(sourceTasks)).SelectMany(static list => list).ToList();
     }
 
     private async Task<List<DiscoveryCandidate>> FetchSource(
@@ -295,9 +311,26 @@ public sealed partial class DiscoveryCandidateIngestionService(
             .Take(maxCandidates)
             .ToList();
 
-        for (var i = 0; i < Math.Min(maxDetailFetches, candidates.Count); i++)
+        var detailCount = Math.Min(maxDetailFetches, candidates.Count);
+        if (detailCount > 0)
         {
-            candidates[i] = await EnrichFromRecipePage(candidates[i], source, now, ct);
+            var detailParallelism = Math.Clamp(options.Value.SourceDetailParallelism, 1, 8);
+            using var detailLimiter = new SemaphoreSlim(detailParallelism, detailParallelism);
+            var detailTasks = Enumerable.Range(0, detailCount).Select(async i =>
+            {
+                await detailLimiter.WaitAsync(ct);
+                try
+                {
+                    return (Index: i, Candidate: await EnrichFromRecipePage(candidates[i], source, now, ct));
+                }
+                finally
+                {
+                    detailLimiter.Release();
+                }
+            });
+
+            foreach (var result in await Task.WhenAll(detailTasks))
+                candidates[result.Index] = result.Candidate;
         }
 
         return candidates
@@ -555,23 +588,30 @@ public sealed partial class DiscoveryCandidateIngestionService(
 
     private bool ShouldSkipUserDomain(string domain, DateTimeOffset now)
     {
-        if (UserSourceLastSuccess.TryGetValue(domain, out var lastSuccess) &&
-            now - lastSuccess < TimeSpan.FromHours(Math.Clamp(options.Value.UserSourceSuccessCooldownHours, 1, 168)))
-            return true;
+        lock (UserSourceStateLock)
+        {
+            if (UserSourceLastSuccess.TryGetValue(domain, out var lastSuccess) &&
+                now - lastSuccess < TimeSpan.FromHours(Math.Clamp(options.Value.UserSourceSuccessCooldownHours, 1, 168)))
+                return true;
 
-        return UserSourceLastFailure.TryGetValue(domain, out var lastFailure) &&
-               now - lastFailure < TimeSpan.FromHours(Math.Clamp(options.Value.UserSourceFailureCooldownHours, 1, 168));
+            return UserSourceLastFailure.TryGetValue(domain, out var lastFailure) &&
+                   now - lastFailure < TimeSpan.FromHours(Math.Clamp(options.Value.UserSourceFailureCooldownHours, 1, 168));
+        }
     }
 
     private static void MarkUserSourceSuccess(string domain, DateTimeOffset now)
     {
-        UserSourceLastSuccess[domain] = now;
-        UserSourceLastFailure.Remove(domain);
+        lock (UserSourceStateLock)
+        {
+            UserSourceLastSuccess[domain] = now;
+            UserSourceLastFailure.Remove(domain);
+        }
     }
 
     private static void MarkUserSourceFailure(string domain, DateTimeOffset now)
     {
-        UserSourceLastFailure[domain] = now;
+        lock (UserSourceStateLock)
+            UserSourceLastFailure[domain] = now;
     }
 
     private DiscoverySourceOptions UserSource(string domain)
